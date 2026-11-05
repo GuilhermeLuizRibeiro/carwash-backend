@@ -1,0 +1,776 @@
+openapi: 3.0.3
+info:
+  title: Car Wash - Disponibilidade, Agendamento e Painel de Pedidos
+  version: 0.2.0
+  description: 'Contrato das rotas de disponibilidade, agendamento e painel de pedidos (projeto unificado).
+
+
+    **Autenticação:** todas as rotas exigem token Bearer do Sanctum (`Authorization: Bearer <token>`), obtido em `POST /auth/login`
+    (cliente) ou `POST /admin/login` (equipe). Contas, serviços e endereços estão em `docs/openapi.yaml`.
+
+    - Sem token ou token inválido: **401**. Token de perfil sem permissão: **403**.
+
+    - Rotas do cliente (`/disponibilidade*`, `/agendamentos*`): somente token de **cliente**.
+
+    - Painel (`/admin/agendamentos*`): **equipe** (administrador ou funcionário).
+
+    - Janelas (`/admin/disponibilidades*`): somente **administrador**.
+
+
+    **Status do pedido:** `pendente` (na interface: *Avaliando*), `confirmado`, `concluido`, `cancelado`.
+
+
+    **Valor:** `valor_total` é uma estimativa calculada pela tabela de preços. Enquanto os preços dos serviços forem `0`,
+    o valor vem `0.00`, que deve ser exibido como *a combinar*: o prestador informa o valor depois.
+
+
+    **Datas:** horários livres vêm com fuso (`-03:00`). `data_hora` e `data_hora_fim` dos agendamentos vêm em UTC (terminam
+    em `Z`) e devem ser convertidos para o horário local na exibição.'
+servers:
+- url: http://127.0.0.1:8000/api
+tags:
+- name: Cliente
+- name: Admin
+paths:
+  /disponibilidade/dias:
+    get:
+      tags:
+      - Cliente
+      summary: Dias do mês com horário livre
+      parameters:
+      - name: mes
+        in: query
+        required: true
+        schema:
+          type: string
+          example: 2026-11
+      - name: servico_id
+        in: query
+        required: true
+        schema:
+          type: integer
+      responses:
+        '200':
+          description: Lista de dias
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        data:
+                          type: string
+                          example: '2026-11-14'
+                        livres:
+                          type: integer
+                          example: 5
+        '401': &id001
+          $ref: '#/components/responses/NaoAutenticado'
+        '403': &id002
+          $ref: '#/components/responses/SemPermissao'
+        '422':
+          $ref: '#/components/responses/Validacao'
+        '503':
+          description: Agenda externa indisponível; não foi possível confirmar os horários
+      description: 'Acesso: somente cliente.'
+  /disponibilidade:
+    get:
+      tags:
+      - Cliente
+      summary: Horários livres de um dia
+      parameters:
+      - name: data
+        in: query
+        required: true
+        schema:
+          type: string
+          example: '2026-11-14'
+      - name: servico_id
+        in: query
+        required: true
+        schema:
+          type: integer
+      responses:
+        '200':
+          description: Horários livres
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Horario'
+        '401': *id001
+        '403': *id002
+        '422':
+          $ref: '#/components/responses/Validacao'
+        '503':
+          description: Agenda externa indisponível; não foi possível confirmar os horários
+      description: 'Acesso: somente cliente.'
+  /agendamentos:
+    get:
+      tags:
+      - Cliente
+      summary: Histórico do cliente logado
+      responses:
+        '200':
+          description: Agendamentos do cliente
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Agendamento'
+        '401': *id001
+        '403': *id002
+      description: 'Acesso: somente cliente.'
+    post:
+      tags:
+      - Cliente
+      summary: Cria um agendamento (status pendente)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NovoAgendamento'
+      responses:
+        '201':
+          description: Criado
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Agendamento'
+        '401': *id001
+        '403': *id002
+        '422':
+          $ref: '#/components/responses/Validacao'
+        '503':
+          description: Agenda externa indisponível; o agendamento não foi criado
+      description: 'Acesso: somente cliente.'
+  /agendamentos/{id}:
+    get:
+      tags:
+      - Cliente
+      summary: Detalhe de um agendamento do próprio cliente
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+      responses:
+        '200':
+          description: Agendamento
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Agendamento'
+        '401': *id001
+        '403': *id002
+        '404':
+          description: Não encontrado (ou pertence a outro cliente)
+      description: 'Acesso: somente cliente.'
+  /agendamentos/{id}/cancelar:
+    patch:
+      tags:
+      - Cliente
+      summary: Cancela um agendamento (respeita a antecedência mínima)
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+      responses:
+        '200':
+          description: Cancelado
+        '401': *id001
+        '403': *id002
+        '409':
+          description: Status não permite cancelar
+        '422':
+          $ref: '#/components/responses/Validacao'
+      description: 'Acesso: somente cliente.'
+  /admin/disponibilidades:
+    get:
+      tags:
+      - Admin
+      summary: Lista as janelas (filtro opcional por período)
+      parameters:
+      - name: data_inicio
+        in: query
+        schema:
+          type: string
+          example: '2026-11-01'
+      - name: data_fim
+        in: query
+        schema:
+          type: string
+          example: '2026-11-30'
+      responses:
+        '200':
+          description: Janelas
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Janela'
+        '401': *id001
+        '403': *id002
+      description: 'Acesso: somente administrador.'
+    post:
+      tags:
+      - Admin
+      summary: Cria uma janela
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NovaJanela'
+      responses:
+        '201':
+          description: Criada
+        '401': *id001
+        '403': *id002
+        '422':
+          $ref: '#/components/responses/Validacao'
+      description: 'Acesso: somente administrador.'
+  /admin/disponibilidades/{id}:
+    get:
+      tags:
+      - Admin
+      summary: Detalhe de uma janela
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+      responses:
+        '200':
+          description: Janela
+        '401': *id001
+        '403': *id002
+      description: 'Acesso: somente administrador.'
+    put:
+      tags:
+      - Admin
+      summary: Altera horários, capacidade ou observação (não altera a data)
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                hora_inicio:
+                  type: string
+                  example: 08:00
+                hora_fim:
+                  type: string
+                  example: '12:00'
+                capacidade:
+                  type: integer
+                observacao:
+                  type: string
+      responses:
+        '200':
+          description: Atualizada
+        '401': *id001
+        '403': *id002
+        '409':
+          $ref: '#/components/responses/Conflito'
+        '422':
+          $ref: '#/components/responses/Validacao'
+      description: 'Acesso: somente administrador.'
+    delete:
+      tags:
+      - Admin
+      summary: Apaga uma janela sem agendamentos
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+      responses:
+        '204':
+          description: Apagada
+        '401': *id001
+        '403': *id002
+        '409':
+          $ref: '#/components/responses/Conflito'
+      description: 'Acesso: somente administrador.'
+  /admin/disponibilidades/lote:
+    post:
+      tags:
+      - Admin
+      summary: Cria janelas num período, nos dias da semana escolhidos
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Lote'
+      responses:
+        '201':
+          description: Resultado do lote
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      criadas:
+                        type: integer
+                        example: 8
+                      ignoradas:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            data:
+                              type: string
+                            motivo:
+                              type: string
+        '401': *id001
+        '403': *id002
+        '422':
+          $ref: '#/components/responses/Validacao'
+      description: 'Acesso: somente administrador.'
+  /admin/agendamentos:
+    get:
+      tags:
+      - Admin
+      summary: Lista agendamentos com filtros e paginação
+      description: 'Acesso: equipe (administrador ou funcionário).'
+      parameters:
+      - name: status
+        in: query
+        schema:
+          type: string
+          enum:
+          - pendente
+          - confirmado
+          - concluido
+          - cancelado
+      - name: data_inicio
+        in: query
+        schema:
+          type: string
+          format: date
+      - name: data_fim
+        in: query
+        schema:
+          type: string
+          format: date
+      - name: cliente_id
+        in: query
+        schema:
+          type: integer
+      - name: servico_id
+        in: query
+        schema:
+          type: integer
+      - name: usuario_id
+        in: query
+        description: ID do atendente
+        schema:
+          type: integer
+      - name: page
+        in: query
+        schema:
+          type: integer
+          minimum: 1
+      - name: per_page
+        in: query
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 100
+          default: 15
+      responses:
+        '200':
+          description: Página de agendamentos, com relações de cliente, endereço, serviço e atendente
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/AgendamentoAdmin'
+                  links:
+                    type: object
+                  meta:
+                    type: object
+        '401': *id001
+        '403': *id002
+        '422':
+          $ref: '#/components/responses/Validacao'
+  /admin/agendamentos/resumo:
+    get:
+      tags:
+      - Admin
+      summary: Retorna a quantidade de agendamentos pendentes
+      description: 'Acesso: equipe (administrador ou funcionário).'
+      responses:
+        '200':
+          description: Contagem atual
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      pendentes:
+                        type: integer
+                        example: 4
+        '401': *id001
+        '403': *id002
+  /admin/agendamentos/{id}:
+    get:
+      tags:
+      - Admin
+      summary: Detalhes administrativos de um agendamento
+      description: 'Inclui cliente, endereço, serviços e atendente. Anexos e fotos ainda dependem do schema compartilhado.
+        Acesso: equipe (administrador ou funcionário).'
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+      responses:
+        '200':
+          description: Agendamento
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/AgendamentoAdmin'
+        '401': *id001
+        '403': *id002
+        '404':
+          description: Agendamento não encontrado
+  /admin/agendamentos/{id}/confirmar:
+    patch:
+      tags:
+      - Admin
+      summary: Confirma agendamento pendente e atribui o atendente autenticado
+      description: 'Mantém o valor calculado e persistido na criação; não aceita preço do cliente. Acesso: equipe (administrador
+        ou funcionário).'
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+      responses:
+        '200':
+          description: Confirmado; o evento do Google é processado em fila após o commit
+        '401': *id001
+        '403': *id002
+        '404':
+          description: Agendamento não encontrado
+        '409':
+          description: Transição de status inválida
+  /admin/agendamentos/{id}/recusar:
+    patch:
+      tags:
+      - Admin
+      summary: Recusa agendamento pendente e exige motivo
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - motivo
+              properties:
+                motivo:
+                  type: string
+                  maxLength: 255
+      responses:
+        '200':
+          description: Recusado; dispara AgendamentoCancelado para remover evento externo
+          se houver: null
+        '401': *id001
+        '403': *id002
+        '404':
+          description: Agendamento não encontrado
+        '409':
+          description: Transição de status inválida
+        '422':
+          $ref: '#/components/responses/Validacao'
+      description: 'Acesso: equipe (administrador ou funcionário).'
+  /admin/agendamentos/{id}/concluir:
+    patch:
+      tags:
+      - Admin
+      summary: Conclui agendamento confirmado
+      description: 'A associação de fotos de antes e depois aguarda alinhamento do schema existente. Acesso: equipe (administrador
+        ou funcionário).'
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: integer
+      responses:
+        '200':
+          description: Concluído
+        '401': *id001
+        '403': *id002
+        '404':
+          description: Agendamento não encontrado
+        '409':
+          description: Transição de status inválida
+components:
+  responses:
+    Validacao:
+      description: Dados inválidos
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              message:
+                type: string
+              errors:
+                type: object
+                additionalProperties:
+                  type: array
+                  items:
+                    type: string
+    Conflito:
+      description: A janela possui agendamentos
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              message:
+                type: string
+              agendamentos:
+                type: array
+                items:
+                  type: integer
+    NaoAutenticado:
+      description: Sem token ou token inválido
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              message:
+                type: string
+                example: Não autenticado.
+    SemPermissao:
+      description: O perfil do token não pode usar esta rota
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              message:
+                type: string
+  schemas:
+    Horario:
+      type: object
+      properties:
+        inicio:
+          type: string
+          example: '2026-11-14T08:00:00-03:00'
+        fim:
+          type: string
+          example: '2026-11-14T09:00:00-03:00'
+    Janela:
+      type: object
+      properties:
+        id:
+          type: integer
+        data:
+          type: string
+          example: '2026-11-14'
+        hora_inicio:
+          type: string
+          example: 08:00:00
+        hora_fim:
+          type: string
+          example: '12:00:00'
+        capacidade:
+          type: integer
+        observacao:
+          type: string
+          nullable: true
+    NovaJanela:
+      type: object
+      required:
+      - data
+      - hora_inicio
+      - hora_fim
+      properties:
+        data:
+          type: string
+          example: '2026-11-14'
+        hora_inicio:
+          type: string
+          example: 08:00
+        hora_fim:
+          type: string
+          example: '12:00'
+        capacidade:
+          type: integer
+          example: 1
+        observacao:
+          type: string
+    Lote:
+      type: object
+      required:
+      - data_inicio
+      - data_fim
+      - dias_semana
+      - hora_inicio
+      - hora_fim
+      properties:
+        data_inicio:
+          type: string
+          example: '2026-11-01'
+        data_fim:
+          type: string
+          example: '2026-12-31'
+        dias_semana:
+          type: array
+          description: 0 = domingo ... 6 = sábado
+          items:
+            type: integer
+            example: 6
+        hora_inicio:
+          type: string
+          example: 08:00
+        hora_fim:
+          type: string
+          example: '12:00'
+        capacidade:
+          type: integer
+          example: 1
+        observacao:
+          type: string
+    NovoAgendamento:
+      type: object
+      required:
+      - endereco_id
+      - data_hora
+      - servicos
+      properties:
+        endereco_id:
+          type: integer
+          example: 1
+        data_hora:
+          type: string
+          example: '2026-11-14T08:00:00-03:00'
+          description: 'Deve ser um horário devolvido por GET /disponibilidade. Aceita fuso (ex.: -03:00).'
+        servicos:
+          type: array
+          items:
+            type: object
+            required:
+            - servico_id
+            properties:
+              servico_id:
+                type: integer
+                example: 1
+              quantidade:
+                type: integer
+                example: 1
+        observacoes:
+          type: string
+    Agendamento:
+      type: object
+      properties:
+        id:
+          type: integer
+        status:
+          type: string
+          enum:
+          - pendente
+          - confirmado
+          - concluido
+          - cancelado
+          description: '`pendente` é exibido como "Avaliando".'
+        data_hora:
+          type: string
+          example: '2026-11-14T11:00:00.000000Z'
+          description: UTC; equivale a 08:00 em Brasília.
+        data_hora_fim:
+          type: string
+          example: '2026-11-14T12:00:00.000000Z'
+        valor_total:
+          type: string
+          nullable: true
+          example: '100.00'
+          description: Estimativa pela tabela de preços. "0.00" = a combinar (preços ainda não definidos).
+        servicos:
+          type: array
+          items:
+            type: object
+    AgendamentoAdmin:
+      allOf:
+      - $ref: '#/components/schemas/Agendamento'
+      - type: object
+        properties:
+          cliente:
+            type: object
+          endereco:
+            type: object
+          atendente:
+            type: object
+            nullable: true
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: Token do Sanctum (login do cliente ou da equipe).
+security:
+- bearerAuth: []
