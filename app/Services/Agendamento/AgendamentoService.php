@@ -58,7 +58,7 @@ class AgendamentoService
         $arquivosSalvos = [];
 
         try {
-            return DB::transaction(function () use ($cliente, $dados, $itens, $servicos, $inicio, $fim, $duracao, $centavos, &$arquivosSalvos) {
+            return DB::transaction(function () use ($cliente, $dados, $itens, $servicos, $inicio, $fim, $duracao, $centavos, $anexos, &$arquivosSalvos) {
                 Disponibilidade::doDia($inicio->toDateString())->lockForUpdate()->get();
 
                 $this->exigirHorarioLivre($inicio, $duracao, false);
